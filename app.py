@@ -142,7 +142,7 @@ def search_section():
 
     # Ligne LME
     col_nom, col_inc, col_exc = st.sidebar.columns([2, 1, 1])
-    col_nom.write("LME")
+    col_nom.write("LME de l'OMS")
     inc_lme = col_inc.checkbox("inc_lme", key="inc_lme", label_visibility="collapsed")
     exc_lme = col_exc.checkbox("exc_lme", key="exc_lme", label_visibility="collapsed")
 
@@ -195,6 +195,13 @@ def search_section():
                 col_nom.write("MSIS")
                 filtres_dynamiques_inc['msis'] = col_inc.checkbox("inc_msis", key="inc_msis", label_visibility="collapsed")
                 filtres_dynamiques_exc['msis'] = col_exc.checkbox("exc_msis", key="exc_msis", label_visibility="collapsed")
+
+            if df_secret['spec_lme'].any():
+                col_nom, col_inc, col_exc = st.sidebar.columns([2, 1, 1])
+                col_nom.write("LME (DGS)")
+                filtres_dynamiques_inc['spec_lme'] = col_inc.checkbox("inc_speclme", key="inc_speclme", label_visibility="collapsed")
+                filtres_dynamiques_exc['spec_lme'] = col_exc.checkbox("exc_speclme", key="exc_speclme", label_visibility="collapsed")
+
         else:
             st.sidebar.error("Erreur: Colonne 'ATC 5' introuvable.")
 
@@ -278,7 +285,7 @@ def search_section():
 
     titre_recherche = " & ".join(filter(None, [query_med.upper(), query_code.upper(), query_lab.upper()]))
 
-    return results, titre_recherche, pays_selectionnes
+    return results, titre_recherche, pays_selectionnes, df_secret
 
 
 
@@ -451,7 +458,7 @@ def export_excel(df):
         df.to_excel(writer, index=False, sheet_name='Data')
     return output.getvalue()
 
-def download_section(cis_list):
+def download_section(cis_list, df_secret):
     if st.button("Exporter en Excel"):
 
         sql = """
@@ -461,6 +468,9 @@ def download_section(cis_list):
                 m.forme_pharma AS "Forme Pharmaceutique",
                 m.titulaire AS "Titulaire",
                 m.code_atc AS "Code ATC",
+                m.est_mitm,
+                m.est_lme,
+                m.est_ulcm,
                 comp.composants AS "Substances Actives",
                 fab.usines AS "Sites de Production",
                 COALESCE(dispo.statut_dispo, 'Disponible') AS "État de Disponibilité"
@@ -492,6 +502,40 @@ def download_section(cis_list):
 
         with st.spinner("Génération du fichier Excel"):
             final_df = get_data(sql, {"cis_list": tuple(cis_list)})
+            # --- 1. GESTION DES LISTES PUBLIQUES ---
+            # On met un "X" si c'est vrai, sinon on laisse vide
+            final_df['Liste MITM'] = final_df['est_mitm'].apply(lambda x: "X" if x == True else "")
+            final_df['Liste LME (OMS)'] = final_df['est_lme'].apply(lambda x: "X" if x == True else "")
+            final_df['Liste ULCM'] = final_df['est_ulcm'].apply(lambda x: "X" if x == True else "")
+
+            # On supprime les colonnes brutes de la base de données pour faire propre
+            final_df = final_df.drop(columns=['est_mitm', 'est_lme', 'est_ulcm'])
+
+            # --- 2. GESTION DES LISTES CONFIDENTIELLES ---
+            # Si un fichier Excel a été glissé dans l'application, df_secret n'est pas vide
+            if df_secret is not None and not df_secret.empty:
+                # Magie Pandas : on fusionne les deux tableaux en associant le Code ATC
+                final_df = pd.merge(final_df, df_secret, left_on='Code ATC', right_on='ATC', how='left')
+
+                # Dictionnaire de traduction (Nom dans le code -> Nom propre pour l'Excel)
+                colonnes_secretes_mapping = {
+                    'stock_strat': 'Stock Stratégique',
+                    'stock_tact': 'Stock Tactique',
+                    'ssa': 'Liste SSA',
+                    'msis': 'Liste MSIS',
+                    'spec_lme': 'Spécialités LME (DGS)'
+                }
+
+                # On boucle sur les colonnes secrètes pour mettre des "X"
+                for col_brute, nom_propre in colonnes_secretes_mapping.items():
+                    if col_brute in final_df.columns:
+                        final_df[nom_propre] = final_df[col_brute].apply(lambda x: "X" if x == True else "")
+                        # On supprime la colonne brute
+                        final_df = final_df.drop(columns=[col_brute])
+
+                # On nettoie la colonne ATC en double
+                if 'ATC' in final_df.columns:
+                    final_df = final_df.drop(columns=['ATC'])
 
             # Petit nettoyage final pour l'esthétique du fichier
             final_df = final_df.fillna("Non renseigné")
@@ -521,7 +565,8 @@ def charger_liste_confidentielle(fichier_upload):
             'STOCK STRATEGIQUE': 'stock_strat',
             'STOCK TACTIQUE': 'stock_tact',
             'SSA': 'ssa',
-            'MSIS': 'msis'
+            'MSIS': 'msis',
+            'SPECIALITES LME': 'spec_lme'
         }
 
         # On va stocker le numéro de la colonne (0, 1, 2...) pour chaque mot clé
@@ -817,16 +862,87 @@ def stats_section(results):
         fig_penurie.update_layout(margin=dict(t=30, l=10, r=10, b=10), height=600)
         st.plotly_chart(fig_penurie, use_container_width=True)
 
+def dci_section(cis_list, df_secret):
+    st.subheader("Synthèse regroupée par ATC")
+
+    # La requête SQL magique qui "écrase" les CIS pour regrouper par ATC
+    sql = """
+        SELECT 
+            m.code_atc AS "Code ATC",
+            STRING_AGG(DISTINCT c.denomination_substance, ' + ') AS "DCI",
+            COUNT(DISTINCT m.cis) AS "Nb de déclinaisons (CIS)",
+            STRING_AGG(DISTINCT m.nom, ' | ') AS "Spécialités concernées",
+            STRING_AGG(DISTINCT m.titulaire, ' | ') AS "Laboratoires fabriquant",
+            STRING_AGG(DISTINCT f.pays_propre, ' | ') AS "Pays de production",
+            STRING_AGG(DISTINCT d.statut, ' / ') AS "Alertes de disponibilité",
+            BOOL_OR(m.est_mitm) AS est_mitm,
+            BOOL_OR(m.est_lme) AS est_lme,
+            BOOL_OR(m.est_ulcm) AS est_ulcm
+        FROM medicament m
+        LEFT JOIN composition c ON m.cis = c.cis
+        LEFT JOIN fabricant f ON m.cis = f.cis
+        LEFT JOIN disponibilite d ON m.cis = d.cis
+        WHERE m.cis IN :cis_list AND m.code_atc IS NOT NULL
+        GROUP BY m.code_atc
+        ORDER BY m.code_atc
+    """
+
+    with st.spinner("Compression des données par DCI..."):
+        df_dci = get_data(sql, {"cis_list": tuple(cis_list)})
+
+        # --- 1. GESTION DES LISTES PUBLIQUES ---
+        df_dci['Liste MITM'] = df_dci['est_mitm'].apply(lambda x: "X" if x == True else "")
+        df_dci['Liste LME (OMS)'] = df_dci['est_lme'].apply(lambda x: "X" if x == True else "")
+        df_dci['Liste ULCM'] = df_dci['est_ulcm'].apply(lambda x: "X" if x == True else "")
+
+        df_dci = df_dci.drop(columns=['est_mitm', 'est_lme', 'est_ulcm'])
+
+        # --- 2. GESTION DES LISTES CONFIDENTIELLES ---
+        if df_secret is not None and not df_secret.empty:
+            df_dci = pd.merge(df_dci, df_secret, left_on='Code ATC', right_on='ATC', how='left')
+
+            colonnes_secretes_mapping = {
+                'stock_strat': 'Stock Stratégique',
+                'stock_tact': 'Stock Tactique',
+                'ssa': 'Liste SSA',
+                'msis': 'Liste MSIS',
+                'spec_lme': 'Spécialités LME (DGS)'
+            }
+
+            for col_brute, nom_propre in colonnes_secretes_mapping.items():
+                if col_brute in df_dci.columns:
+                    df_dci[nom_propre] = df_dci[col_brute].apply(lambda x: "X" if x == True else "")
+                    df_dci = df_dci.drop(columns=[col_brute])
+
+            if 'ATC' in df_dci.columns:
+                df_dci = df_dci.drop(columns=['ATC'])
+
+
+        df_dci = df_dci.fillna("Non renseigné")
+
+        # 1. On affiche l'aperçu à l'écran
+        st.dataframe(df_dci, hide_index=True, use_container_width=True)
+
+        # 2. Le bouton d'export Excel dédié
+        st.write("---")
+        excel_data = export_excel(df_dci)
+        st.download_button(
+            label="Télécharger l'Excel", 
+            data=excel_data, 
+            file_name="synthese_dci_atc.xlsx", 
+            mime="application/vnd.ms-excel"
+        )
+
 def main():
     injecter_css_pro()
     st.title("Base des médicaments")
 
-    results, titre_recherche, pays_selectionnes = search_section()
+    results, titre_recherche, pays_selectionnes, df_secret = search_section()
 
     if results is not None and not results.empty:
         cis_list = results['cis'].tolist()
 
-        tab_h, tab_m, tab_s, tab_e = st.tabs(["Arborescence", "Carte Mondiale", "Statistiques", "Excel"])
+        tab_h, tab_m, tab_s, tab_e, tab_dci = st.tabs(["Arborescence", "Carte Mondiale", "Statistiques", "Excel", "Synthèse DCI (ATC)"])
 
         with tab_h:
             display_hierarchy(cis_list, titre_recherche)
@@ -838,7 +954,10 @@ def main():
             stats_section(results)
 
         with tab_e: 
-            download_section(cis_list)
+            download_section(cis_list, df_secret)
+
+        with tab_dci:
+            dci_section(cis_list, df_secret)
 
     elif titre_recherche:
         st.warning(f"Aucun résultat pour '{titre_recherche}'.")
