@@ -5,4 +5,6 @@ streamlit-folium
 SQLAlchemy
 psycopg2-binary
 plotly
+
 xlsxwriter
+openpyxl
