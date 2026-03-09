@@ -744,33 +744,34 @@ def get_stats_penuries_detaillees(cis_list_tuple):
     """
     return get_data(sql, {"cis_list": cis_list_tuple})
 
-def get_total_unique_dci(cis_list_tuple):
+def get_total_unique_atc(cis_list_tuple):
     if not cis_list_tuple:
         return 0
-    # On compte les DCI uniques de TOUTE la sélection en cours
+    # On compte désormais les codes ATC uniques dans la table medicament
     sql = """
-        SELECT COUNT(DISTINCT denomination_substance) 
-        FROM composition 
-        WHERE cis IN :cis_list
+        SELECT COUNT(DISTINCT code_atc) 
+        FROM medicament 
+        WHERE cis IN :cis_list AND code_atc IS NOT NULL
     """
     df = get_data(sql, {"cis_list": cis_list_tuple})
     return int(df.iloc[0, 0])
 
-def get_stats_labo_dci(cis_list_tuple):
+def get_stats_labo_atc(cis_list_tuple):
     if not cis_list_tuple:
         return pd.DataFrame()
 
+    # On utilise un LEFT JOIN pour ne pas perdre un médicament s'il n'a pas de composition détaillée
     sql = """
         SELECT 
             m.titulaire AS "Laboratoire Titulaire",
-            COUNT(DISTINCT c.denomination_substance) AS "Nombre de DCI",
+            COUNT(DISTINCT m.code_atc) AS "Nombre d'ATC uniques",
             STRING_AGG(DISTINCT m.code_atc, ' | ') AS "Liste des codes ATC",
-            STRING_AGG(DISTINCT c.denomination_substance, ' | ') AS "Liste des DCI"
+            STRING_AGG(DISTINCT c.denomination_substance, ' | ') AS "Liste des DCI (indicatif)"
         FROM medicament m
-        JOIN composition c ON m.cis = c.cis
-        WHERE m.cis IN :cis_list
+        LEFT JOIN composition c ON m.cis = c.cis
+        WHERE m.cis IN :cis_list AND m.code_atc IS NOT NULL
         GROUP BY m.titulaire
-        ORDER BY "Nombre de DCI" DESC
+        ORDER BY "Nombre d'ATC uniques" DESC
     """
     return get_data(sql, {"cis_list": cis_list_tuple})
 
@@ -921,35 +922,34 @@ def stats_section(results):
         fig_penurie.update_layout(margin=dict(t=30, l=10, r=10, b=10), height=600)
         st.plotly_chart(fig_penurie, use_container_width=True)
 
-    # --- 4. TABLEAU : DIVERSITÉ DES DCI PAR LABORATOIRE ---
+    # --- 4. TABLEAU : DIVERSITÉ PAR LABORATOIRE ---
     st.write("---")
-    st.write("**Classement des Laboratoires par diversité de DCI (selon les filtres actifs)**")
+    st.write("**Classement des Laboratoires par diversité du portefeuille (Codes ATC uniques)**")
 
-    with st.spinner("Analyse des DCI par laboratoire..."):
-        df_labo_dci = get_stats_labo_dci(cis_tuple)
+    with st.spinner("Analyse du portefeuille par laboratoire..."):
+        df_labo_atc = get_stats_labo_atc(cis_tuple)
 
-        if not df_labo_dci.empty:
-            # 1. On récupère et on affiche le total global unique
-            total_dci = get_total_unique_dci(cis_tuple)
-            st.metric("Total des DCI uniques (tous laboratoires confondus)", total_dci)
+        if not df_labo_atc.empty:
+            # 1. Total global
+            total_atc = get_total_unique_atc(cis_tuple)
+            st.metric("Total des classes thérapeutiques (ATC uniques, tous laboratoires)", total_atc)
 
-            # 2. On affiche le tableau enrichi
+            # 2. Affichage du tableau
             st.dataframe(
-                df_labo_dci, 
+                df_labo_atc, 
                 hide_index=True, 
                 use_container_width=True,
                 column_config={
-                    "Nombre de DCI": st.column_config.ProgressColumn(
-                        "Nombre de DCI",
-                        help="Nombre de substances actives différentes",
+                    "Nombre d'ATC uniques": st.column_config.ProgressColumn(
+                        "Nombre d'ATC uniques",
                         format="%d",
                         min_value=0,
-                        max_value=int(df_labo_dci["Nombre de DCI"].max())
+                        max_value=int(df_labo_atc["Nombre d'ATC uniques"].max())
                     )
                 }
             )
         else:
-            st.info("Aucune donnée de composition (DCI) disponible pour ces critères.")
+            st.info("Aucune donnée ATC disponible pour ces critères.")
 
 def dci_section(cis_list, df_secret):
     st.subheader("Synthèse regroupée par ATC")
