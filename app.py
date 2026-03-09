@@ -387,14 +387,20 @@ def display_hierarchy(cis_list, search_term):
 def map_section(cis_list, pays_selectionnes):
     st.subheader("Cartographie mondiale de la production")
 
-    # 1. Filtre Toggle
-    col_f1, _ = st.columns([1, 2])
+    # 1. Filtres (Toggle + Boutons de choix pour la carte)
+    col_f1, col_f2 = st.columns([1, 2])
     with col_f1:
         alerte_only = st.toggle("Uniquement les ruptures/tensions", value=False)
+    with col_f2:
+        # Le sélecteur magique : il ne charge qu'une seule carte à la fois !
+        vue_carte = st.radio(
+            "Mode d'affichage :", 
+            ["Vue détaillée (1 point = 1 médicament)", "Vue globale (1 point = 1 site unique)"], 
+            horizontal=True
+        )
 
     # 2. Requête SQL Dynamique et Optimisée
     if alerte_only:
-        # Si activé : on fait un JOIN strict pour ne récupérer que les alertes
         sql_fab = """
             SELECT f.latitude, f.longitude, f.adresse_complete, f.cis, f.pays_propre, m.nom, d.statut as alerte_statut
             FROM fabricant f
@@ -404,7 +410,6 @@ def map_section(cis_list, pays_selectionnes):
               AND d.statut IN ('Rupture de stock', 'Tension d''approvisionnement')
         """
     else:
-        # Si désactivé : requête simplifiée sans la table disponibilité (gain de vitesse)
         sql_fab = """
             SELECT f.latitude, f.longitude, f.adresse_complete, f.cis, f.pays_propre, m.nom, NULL as alerte_statut
             FROM fabricant f
@@ -425,16 +430,41 @@ def map_section(cis_list, pays_selectionnes):
         with col1:
             m = folium.Map(location=[46, 2], zoom_start=3, tiles="CartoDB positron")
 
-            def format_info(row):
-                base = f"<b>Médicament:</b> {row['nom']}<br><b>Usine:</b> {row['adresse_complete']}"
-                if row['alerte_statut']:
-                    color = "red" if "Rupture" in row['alerte_statut'] else "orange"
-                    base += f"<br><b style='color:{color};'>Statut: {row['alerte_statut']}</b>"
-                return base
+           # --- LOGIQUE DE BASCULEMENT ---
+            if vue_carte == "Vue globale (1 point = 1 site unique)":
 
-            df_fab['info'] = df_fab.apply(format_info, axis=1)
-            data_points = df_fab[['latitude', 'longitude', 'info']].values.tolist()
+                # On groupe UNIQUEMENT par les coordonnées GPS exactes !
+                df_groupe = df_fab.groupby(['latitude', 'longitude']).agg(
+                    # Pour l'adresse, on prend juste la première trouvée à ces coordonnées ('first')
+                    adresse_complete=('adresse_complete', 'first'),
+                    # On compte les vrais médicaments uniques
+                    nb_meds=('cis', 'nunique'), 
+                    # On vérifie s'il y a une alerte
+                    a_alerte=('alerte_statut', lambda x: any(pd.notna(x))) 
+                ).reset_index()
 
+                def format_info_site(row):
+                    base = f"<b>Usine:</b> {row['adresse_complete']}<br><b>Médicaments produits ici:</b> {row['nb_meds']}"
+                    if row['a_alerte']:
+                        base += "<br><b style='color:red;'>Contient des ruptures/tensions</b>"
+                    return base
+
+                df_groupe['info'] = df_groupe.apply(format_info_site, axis=1)
+                data_points = df_groupe[['latitude', 'longitude', 'info']].values.tolist()
+
+            else:
+                # --- ANCIENNE LOGIQUE : TOUT AFFICHER ---
+                def format_info(row):
+                    base = f"<b>Médicament:</b> {row['nom']}<br><b>Usine:</b> {row['adresse_complete']}"
+                    if row['alerte_statut']:
+                        color = "red" if "Rupture" in row['alerte_statut'] else "orange"
+                        base += f"<br><b style='color:{color};'>Statut: {row['alerte_statut']}</b>"
+                    return base
+
+                df_fab['info'] = df_fab.apply(format_info, axis=1)
+                data_points = df_fab[['latitude', 'longitude', 'info']].values.tolist()
+
+            # Ajout des points sur la carte
             callback = """
                 function (row) {
                     var marker = L.marker(new L.LatLng(row[0], row[1]));
@@ -446,9 +476,9 @@ def map_section(cis_list, pays_selectionnes):
             st_folium(m, height=600, use_container_width=True, key="map_fast")
 
         with col2:
-            st.metric("Total Usines", len(df_fab))
-            st.metric("Médicaments", len(df_fab['cis'].unique()))
-            # Le bloc de calcul et de warning a été supprimé ici
+            # J'ai corrigé "Total Usines" : avant il comptait les lignes, maintenant il compte les vraies usines uniques !
+            st.metric("Total Usines", df_fab['adresse_complete'].nunique())
+            st.metric("Médicaments", df_fab['cis'].nunique())
     else:
         st.warning("Aucune donnée disponible pour ces critères.")
 
@@ -714,6 +744,35 @@ def get_stats_penuries_detaillees(cis_list_tuple):
     """
     return get_data(sql, {"cis_list": cis_list_tuple})
 
+def get_total_unique_dci(cis_list_tuple):
+    if not cis_list_tuple:
+        return 0
+    # On compte les DCI uniques de TOUTE la sélection en cours
+    sql = """
+        SELECT COUNT(DISTINCT denomination_substance) 
+        FROM composition 
+        WHERE cis IN :cis_list
+    """
+    df = get_data(sql, {"cis_list": cis_list_tuple})
+    return int(df.iloc[0, 0])
+
+def get_stats_labo_dci(cis_list_tuple):
+    if not cis_list_tuple:
+        return pd.DataFrame()
+
+    sql = """
+        SELECT 
+            m.titulaire AS "Laboratoire Titulaire",
+            COUNT(DISTINCT c.denomination_substance) AS "Nombre de DCI",
+            STRING_AGG(DISTINCT m.code_atc, ' | ') AS "Liste des codes ATC",
+            STRING_AGG(DISTINCT c.denomination_substance, ' | ') AS "Liste des DCI"
+        FROM medicament m
+        JOIN composition c ON m.cis = c.cis
+        WHERE m.cis IN :cis_list
+        GROUP BY m.titulaire
+        ORDER BY "Nombre de DCI" DESC
+    """
+    return get_data(sql, {"cis_list": cis_list_tuple})
 
 def stats_section(results):
     # Transformation pour le cache
@@ -861,6 +920,36 @@ def stats_section(results):
 
         fig_penurie.update_layout(margin=dict(t=30, l=10, r=10, b=10), height=600)
         st.plotly_chart(fig_penurie, use_container_width=True)
+
+    # --- 4. TABLEAU : DIVERSITÉ DES DCI PAR LABORATOIRE ---
+    st.write("---")
+    st.write("**Classement des Laboratoires par diversité de DCI (selon les filtres actifs)**")
+
+    with st.spinner("Analyse des DCI par laboratoire..."):
+        df_labo_dci = get_stats_labo_dci(cis_tuple)
+
+        if not df_labo_dci.empty:
+            # 1. On récupère et on affiche le total global unique
+            total_dci = get_total_unique_dci(cis_tuple)
+            st.metric("Total des DCI uniques (tous laboratoires confondus)", total_dci)
+
+            # 2. On affiche le tableau enrichi
+            st.dataframe(
+                df_labo_dci, 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "Nombre de DCI": st.column_config.ProgressColumn(
+                        "Nombre de DCI",
+                        help="Nombre de substances actives différentes",
+                        format="%d",
+                        min_value=0,
+                        max_value=int(df_labo_dci["Nombre de DCI"].max())
+                    )
+                }
+            )
+        else:
+            st.info("Aucune donnée de composition (DCI) disponible pour ces critères.")
 
 def dci_section(cis_list, df_secret):
     st.subheader("Synthèse regroupée par ATC")
