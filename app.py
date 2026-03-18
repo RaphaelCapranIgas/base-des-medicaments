@@ -410,7 +410,7 @@ def map_section(cis_list, pays_selectionnes):
         # Le sélecteur magique : il ne charge qu'une seule carte à la fois !
         vue_carte = st.radio(
             "Mode d'affichage :", 
-            ["Vue détaillée (1 point = 1 médicament)", "Vue globale (1 point = 1 site unique)"], 
+            ["Vue détaillée (1 point = 1 médicament)", "Vue globale (1 point = 1 pays unique)"], 
             horizontal=True
         )
 
