@@ -24,12 +24,19 @@ engine = create_engine(DATABASE_URL)
 def get_data(query, params=None):
     with engine.connect() as conn:
         return pd.read_sql(text(query), conn, params=params)
+
+# Pour pointer sur les anciennes adresses
+# @st.cache_data
+# def get_liste_pays():
+#     """Récupère la liste alphabétique de tous les pays disponibles dans la base"""
+#     sql = "SELECT DISTINCT pays_propre FROM fabricant WHERE pays_propre IS NOT NULL ORDER BY pays_propre"
+#     df_pays = get_data(sql)
+#     return df_pays['pays_propre'].tolist()
 @st.cache_data
 def get_liste_pays():
-    """Récupère la liste alphabétique de tous les pays disponibles dans la base"""
-    sql = "SELECT DISTINCT pays_propre FROM fabricant WHERE pays_propre IS NOT NULL ORDER BY pays_propre"
+    sql = "SELECT DISTINCT pays FROM paysfabrication WHERE pays IS NOT NULL ORDER BY pays"
     df_pays = get_data(sql)
-    return df_pays['pays_propre'].tolist()
+    return df_pays['pays'].tolist()
 
 def injecter_css_pro():
     st.markdown("""
@@ -135,18 +142,30 @@ def search_section():
     col_inc.write("✅")
     col_exc.write("❌")
 
+    # === MITM ===
     col_nom, col_inc, col_exc = st.sidebar.columns([2, 1, 1])
-    col_nom.write("MITM")
+    col_nom.markdown(
+        "<p style='margin-bottom: 0; line-height: 1.2;'>MITM<br><span style='font-size: 0.8rem; color: #888;'>MàJ : 04/07/2025</span></p>", 
+        unsafe_allow_html=True
+    )
     inc_mitm = col_inc.checkbox("inc_mitm", key="inc_mitm", label_visibility="collapsed")
     exc_mitm = col_exc.checkbox("exc_mitm", key="exc_mitm", label_visibility="collapsed")
 
+    # === LME de l'OMS ===
     col_nom, col_inc, col_exc = st.sidebar.columns([2, 1, 1])
-    col_nom.write("LME de l'OMS")
+    col_nom.markdown(
+        "<p style='margin-bottom: 0; line-height: 1.2;'>LME de l'OMS<br><span style='font-size: 0.8rem; color: #888;'>MàJ : 05/10/2025</span></p>", 
+        unsafe_allow_html=True
+    )
     inc_lme = col_inc.checkbox("inc_lme", key="inc_lme", label_visibility="collapsed")
     exc_lme = col_exc.checkbox("exc_lme", key="exc_lme", label_visibility="collapsed")
 
+    # === ULCM ===
     col_nom, col_inc, col_exc = st.sidebar.columns([2, 1, 1])
-    col_nom.write("ULCM")
+    col_nom.markdown(
+        "<p style='margin-bottom: 0; line-height: 1.2;'>ULCM<br><span style='font-size: 0.8rem; color: #888;'>MàJ : 19/01/2026</span></p>", 
+        unsafe_allow_html=True
+    )
     inc_ulcm = col_inc.checkbox("inc_ulcm", key="inc_ulcm", label_visibility="collapsed")
     exc_ulcm = col_exc.checkbox("exc_ulcm", key="exc_ulcm", label_visibility="collapsed")
 
@@ -227,7 +246,8 @@ def search_section():
     if not pays_selectionnes:
         sql += " AND 1=0" 
     elif len(pays_selectionnes) < len(tous_les_pays):
-        sql += " AND m.cis IN (SELECT DISTINCT cis FROM fabricant WHERE pays_propre IN :pays_list)"
+        # ON CHANGE 'fabricant' par 'paysfabrication' et 'pays_propre' par 'pays'
+        sql += " AND m.cis IN (SELECT DISTINCT cis FROM paysfabrication WHERE pays IN :pays_list)"
         params['pays_list'] = tuple(pays_selectionnes)
 
     # --- SQL Filtres Publics ---
@@ -394,11 +414,34 @@ def map_section(cis_list, pays_selectionnes):
             horizontal=True
         )
 
-    # 2. Requête SQL Dynamique et Optimisée
+    # Pour pointer sur les anciennes adresses issu de la notice du médicaments :
+    # # 2. Requête SQL Dynamique et Optimisée
+    # if alerte_only:
+    #     sql_fab = """
+    #         SELECT f.latitude, f.longitude, f.adresse_complete, f.cis, f.pays_propre, m.nom, d.statut as alerte_statut
+    #         FROM fabricant f
+    #         JOIN medicament m ON f.cis = m.cis
+    #         JOIN disponibilite d ON f.cis = d.cis
+    #         WHERE f.cis IN :cis_list AND f.latitude IS NOT NULL
+    #           AND d.statut IN ('Rupture de stock', 'Tension d''approvisionnement')
+    #     """
+    # else:
+    #     sql_fab = """
+    #         SELECT f.latitude, f.longitude, f.adresse_complete, f.cis, f.pays_propre, m.nom, NULL as alerte_statut
+    #         FROM fabricant f
+    #         JOIN medicament m ON f.cis = m.cis
+    #         WHERE f.cis IN :cis_list AND f.latitude IS NOT NULL
+    #     """
+
+    # params = {"cis_list": tuple(cis_list)}
+    # if pays_selectionnes:
+    #     sql_fab += " AND f.pays_propre IN :pays_list"
+    #     params['pays_list'] = tuple(pays_selectionnes)
+    # 2. Requête SQL Dynamique (Pointant sur la nouvelle table paysfabrication)
     if alerte_only:
         sql_fab = """
-            SELECT f.latitude, f.longitude, f.adresse_complete, f.cis, f.pays_propre, m.nom, d.statut as alerte_statut
-            FROM fabricant f
+            SELECT f.latitude, f.longitude, f.pays, f.cis, m.nom, d.statut as alerte_statut
+            FROM paysfabrication f
             JOIN medicament m ON f.cis = m.cis
             JOIN disponibilite d ON f.cis = d.cis
             WHERE f.cis IN :cis_list AND f.latitude IS NOT NULL
@@ -406,15 +449,15 @@ def map_section(cis_list, pays_selectionnes):
         """
     else:
         sql_fab = """
-            SELECT f.latitude, f.longitude, f.adresse_complete, f.cis, f.pays_propre, m.nom, NULL as alerte_statut
-            FROM fabricant f
+            SELECT f.latitude, f.longitude, f.pays, f.cis, m.nom, NULL as alerte_statut
+            FROM paysfabrication f
             JOIN medicament m ON f.cis = m.cis
             WHERE f.cis IN :cis_list AND f.latitude IS NOT NULL
         """
 
     params = {"cis_list": tuple(cis_list)}
     if pays_selectionnes:
-        sql_fab += " AND f.pays_propre IN :pays_list"
+        sql_fab += " AND f.pays IN :pays_list" # Changement de pays_propre vers pays
         params['pays_list'] = tuple(pays_selectionnes)
 
     df_fab = get_data(sql_fab, params)
@@ -426,31 +469,52 @@ def map_section(cis_list, pays_selectionnes):
             m = folium.Map(location=[46, 2], zoom_start=3, tiles="CartoDB positron")
 
            # --- LOGIQUE DE BASCULEMENT ---
-            if vue_carte == "Vue globale (1 point = 1 site unique)":
+           # Pareil pour le pointage sur les anciennes adresses :
+            # if vue_carte == "Vue globale (1 point = 1 site unique)":
 
-                # On groupe UNIQUEMENT par les coordonnées GPS exactes !
-                df_groupe = df_fab.groupby(['latitude', 'longitude']).agg(
-                    # Pour l'adresse, on prend juste la première trouvée à ces coordonnées ('first')
-                    adresse_complete=('adresse_complete', 'first'),
-                    # On compte les vrais médicaments uniques
+            #     # On groupe UNIQUEMENT par les coordonnées GPS exactes !
+            #     df_groupe = df_fab.groupby(['latitude', 'longitude']).agg(
+            #         # Pour l'adresse, on prend juste la première trouvée à ces coordonnées ('first')
+            #         adresse_complete=('adresse_complete', 'first'),
+            #         # On compte les vrais médicaments uniques
+            #         nb_meds=('cis', 'nunique'), 
+            #         # On vérifie s'il y a une alerte
+            #         a_alerte=('alerte_statut', lambda x: any(pd.notna(x))) 
+            #     ).reset_index()
+
+            #     def format_info_site(row):
+            #         base = f"<b>Usine:</b> {row['adresse_complete']}<br><b>Médicaments produits ici:</b> {row['nb_meds']}"
+            #         if row['a_alerte']:
+            #             base += "<br><b style='color:red;'>Contient des ruptures/tensions</b>"
+            #         return base
+            if vue_carte == "Vue globale (1 point = 1 site unique)":
+                # On groupe par Pays pour avoir un seul point central par pays
+                df_groupe = df_fab.groupby(['latitude', 'longitude', 'pays']).agg(
                     nb_meds=('cis', 'nunique'), 
-                    # On vérifie s'il y a une alerte
                     a_alerte=('alerte_statut', lambda x: any(pd.notna(x))) 
                 ).reset_index()
 
                 def format_info_site(row):
-                    base = f"<b>Usine:</b> {row['adresse_complete']}<br><b>Médicaments produits ici:</b> {row['nb_meds']}"
+                    base = f"<b>Pays:</b> {row['pays']}<br><b>Médicaments produits ici:</b> {row['nb_meds']}"
                     if row['a_alerte']:
-                        base += "<br><b style='color:red;'>Contient des ruptures/tensions</b>"
+                        base += "<br><b style='color:red;'>⚠️ Contient des ruptures/tensions</b>"
                     return base
 
                 df_groupe['info'] = df_groupe.apply(format_info_site, axis=1)
                 data_points = df_groupe[['latitude', 'longitude', 'info']].values.tolist()
 
             else:
-                # --- ANCIENNE LOGIQUE : TOUT AFFICHER ---
+                # Pareil pour l'ancien pointage :
+                # # --- ANCIENNE LOGIQUE : TOUT AFFICHER ---
+                # def format_info(row):
+                #     base = f"<b>Médicament:</b> {row['nom']}<br><b>Usine:</b> {row['adresse_complete']}"
+                #     if row['alerte_statut']:
+                #         color = "red" if "Rupture" in row['alerte_statut'] else "orange"
+                #         base += f"<br><b style='color:{color};'>Statut: {row['alerte_statut']}</b>"
+                #     return base
+
                 def format_info(row):
-                    base = f"<b>Médicament:</b> {row['nom']}<br><b>Usine:</b> {row['adresse_complete']}"
+                    base = f"<b>Médicament:</b> {row['nom']}<br><b>Pays de production:</b> {row['pays']}"
                     if row['alerte_statut']:
                         color = "red" if "Rupture" in row['alerte_statut'] else "orange"
                         base += f"<br><b style='color:{color};'>Statut: {row['alerte_statut']}</b>"
@@ -472,7 +536,7 @@ def map_section(cis_list, pays_selectionnes):
 
         with col2:
             # J'ai corrigé "Total Usines" : avant il comptait les lignes, maintenant il compte les vraies usines uniques !
-            st.metric("Total Usines", df_fab['adresse_complete'].nunique())
+            st.metric("Total Pays", df_fab['pays'].nunique())
             st.metric("Médicaments", df_fab['cis'].nunique())
     else:
         st.warning("Aucune donnée disponible pour ces critères.")
@@ -509,8 +573,8 @@ def download_section(cis_list, df_secret):
                 GROUP BY cis
             ) comp ON m.cis = comp.cis
             LEFT JOIN (
-                SELECT cis, STRING_AGG(DISTINCT adresse_complete, ' | ') AS usines
-                FROM fabricant
+                SELECT cis, STRING_AGG(DISTINCT pays, ' | ') AS usines
+                FROM paysfabrication
                 GROUP BY cis
             ) fab ON m.cis = fab.cis
             LEFT JOIN (
@@ -680,24 +744,22 @@ TRAD_ATC_L2 = {
 
 @st.cache_data
 def get_stats_aggregées(cis_list_tuple):
-    """Calcule les stats ATC (Niveaux 1 et 2) et Pays directement dans le moteur SQL"""
     if not cis_list_tuple:
-        return pd.DataFrame() # CORRECTION : Un seul dataframe renvoyé ici
+        return pd.DataFrame() 
 
-    # On ajoute atc_l2 pour le niveau de précision supplémentaire !
     sql_matrice = """
         SELECT 
             SUBSTRING(m.code_atc, 1, 1) as atc_code,
             SUBSTRING(m.code_atc, 1, 3) as atc_l2,
-            f.pays_propre as pays,
+            f.pays as pays,
+            m.voies_admin as voies_admin,  -- AJOUTÉ ICI
             COUNT(*) as nb_sites
         FROM medicament m
-        JOIN fabricant f ON m.cis = f.cis
+        JOIN paysfabrication f ON m.cis = f.cis
         WHERE m.cis IN :cis_list
-        GROUP BY 1, 2, 3
+        GROUP BY 1, 2, 3, 4
     """
     df_m = get_data(sql_matrice, {"cis_list": cis_list_tuple})
-
     return df_m
 
 def get_stats_penuries_detaillees(cis_list_tuple):
@@ -706,16 +768,15 @@ def get_stats_penuries_detaillees(cis_list_tuple):
 
     sql = """
         SELECT 
-            f.pays_propre as pays,
+            f.pays as pays, -- CHANGÉ ICI
             SUBSTRING(m.code_atc, 1, 1) as atc_code,
-            -- On crée une liste propre : "STATUT : Nom du médicament" [cite: 122, 191]
             STRING_AGG(DISTINCT '(' || d.statut || ') ' || COALESCE(m.nom, 'Inconnu'), '<br>• ') as detail_complet,
             COUNT(DISTINCT m.cis) as nb_total_alertes
         FROM medicament m
         JOIN disponibilite d ON m.cis = d.cis
-        JOIN fabricant f ON m.cis = f.cis
+        JOIN paysfabrication f ON m.cis = f.cis -- CHANGÉ ICI
         WHERE m.cis IN :cis_list 
-          AND d.statut IN ('Rupture de stock', 'Tension d''approvisionnement') -- [cite: 118, 119]
+          AND d.statut IN ('Rupture de stock', 'Tension d''approvisionnement')
         GROUP BY 1, 2
     """
     return get_data(sql, {"cis_list": cis_list_tuple})
@@ -750,6 +811,69 @@ def get_stats_labo_atc(cis_list_tuple):
         ORDER BY "Nombre d'ATC uniques" DESC
     """
     return get_data(sql, {"cis_list": cis_list_tuple})
+
+# --- NOUVELLE FONCTION POUR LE CLASSEMENT PAR PAYS ---
+def get_stats_pays_atc(cis_list_tuple):
+    if not cis_list_tuple:
+        return pd.DataFrame()
+
+    sql = """
+        SELECT 
+            f.pays AS "Pays de fabrication",
+            COUNT(DISTINCT m.code_atc) AS "Nombre d'ATC uniques",
+            STRING_AGG(DISTINCT m.code_atc, ' | ') AS "Liste des codes ATC",
+            STRING_AGG(DISTINCT c.denomination_substance, ' | ') AS "Liste des DCI (indicatif)"
+        FROM medicament m
+        JOIN paysfabrication f ON m.cis = f.cis
+        LEFT JOIN composition c ON m.cis = c.cis
+        WHERE m.cis IN :cis_list AND m.code_atc IS NOT NULL
+        GROUP BY f.pays
+        ORDER BY "Nombre d'ATC uniques" DESC
+    """
+    return get_data(sql, {"cis_list": cis_list_tuple})
+
+# --- FONCTION POUR LE CLASSEMENT DES DEPENDANCES HORS EUROPE ---
+def get_stats_pays_hors_eu_exclusifs(cis_list_tuple):
+    if not cis_list_tuple:
+        return pd.DataFrame()
+
+    # Liste des codes pays considérés comme Européens (continent + UK + Suisse)
+    # Basée sur les codes de ton dictionnaire TRADUCTION_PAYS
+    pays_europe = (
+        'Autriche', 'Belgique', 'Bulgarie', 'Suisse', 'Chypre', 'République Tchèque', 
+        'Allemagne', 'Danemark', 'Estonie', 'Espagne', 'Finlande', 'France', 
+        'Royaume-Uni', 'Grèce', 'Croatie', 'Hongrie', 'Irlande', 'Islande', 
+        'Italie', 'Lituanie', 'Lettonie', 'Monaco', 'Malte', 'Pays-Bas', 
+        'Norvège', 'Pologne', 'Portugal', 'Roumanie', 'Suède', 'Slovénie', 'Slovaquie'
+    )
+
+    sql = """
+        WITH atc_europe AS (
+            -- 1. On liste tous les ATC produits dans au moins un pays européen
+            SELECT DISTINCT m.code_atc
+            FROM medicament m
+            JOIN paysfabrication f ON m.cis = f.cis
+            WHERE m.cis IN :cis_list 
+              AND m.code_atc IS NOT NULL
+              AND f.pays IN :pays_eu
+        )
+        -- 2. On prend les pays hors Europe et uniquement les ATC absents de la liste ci-dessus
+        SELECT 
+            f.pays AS "Pays de fabrication",
+            COUNT(DISTINCT m.code_atc) AS "Nombre d'ATC uniques",
+            STRING_AGG(DISTINCT m.code_atc, ' | ') AS "Liste des codes ATC",
+            STRING_AGG(DISTINCT c.denomination_substance, ' | ') AS "Liste des DCI (indicatif)"
+        FROM medicament m
+        JOIN paysfabrication f ON m.cis = f.cis
+        LEFT JOIN composition c ON m.cis = c.cis
+        WHERE m.cis IN :cis_list 
+          AND m.code_atc IS NOT NULL
+          AND f.pays NOT IN :pays_eu
+          AND m.code_atc NOT IN (SELECT code_atc FROM atc_europe)
+        GROUP BY f.pays
+        ORDER BY "Nombre d'ATC uniques" DESC
+    """
+    return get_data(sql, {"cis_list": cis_list_tuple, "pays_eu": pays_europe})
 
 def stats_section(results):
     # Transformation pour le cache
@@ -832,33 +956,88 @@ def stats_section(results):
 
     st.write("---")
 
-    # --- 3. GRAPHIQUE PAYS (Bar Chart épuré) ---
-    st.write("**Répartition par Pays**")
+    # --- 3. GRAPHIQUE PAYS (Bar Chart épuré avec couleurs Injectables) ---
+    st.write("**Répartition du nombre de spécialités (CIS) par Pays et Voie d'administration**")
 
-    # On regroupe les données de la matrice par pays pour le graphique final
-    df_pays_total = df_matrice.groupby('Nom Pays')['nb_sites'].sum().reset_index().sort_values('nb_sites', ascending=False)
+    # --- A. Classification Injectable / Non injectable ---
+    LISTE_NON_INJECTABLES = [
+        "auriculaire", "auriculaire;gingivale;nasale;voie buccale autre", "buccogingivale",
+        "cutanée", "cutanée;inhalée", "cutanée;nasale", "cutanée;orale;sublinguale",
+        "cutanée;transdermique", "dentaire", "dentaire;gingivale", "endocervicale;intra-utérine",
+        "endotrachéobronchique", "épilésionnelle", "gastrique;orale", "gastro-entérale;orale",
+        "gingivale", "gingivale;voie buccale autre", "inhalée", "intestinale", "intra-utérine",
+        "intracervicale", "intradermique", "intravésicale", "intravésicale;rectale;urétrale",
+        "laryngopharyngée;voie buccale autre", "nasale", "nasale;orale", "ophtalmique", "orale",
+        "orale;rectale", "orale;sublinguale", "orale;vaginale", "oropharyngée", "rectale",
+        "sublinguale", "transdermique", "urétrale", "vaginale", "voie buccale autre"
+    ]
+
+    def classer_injectable(voie):
+        if pd.isna(voie) or str(voie).strip() == "":
+            return "Inconnu"
+        # On met en minuscules et on écrase les espaces autour des ";"
+        voie_propre = str(voie).replace(" ; ", ";").strip().lower()
+        if voie_propre in LISTE_NON_INJECTABLES:
+            return "Non injectable"
+        else:
+            return "Injectable"
+
+    df_matrice['Type Injection'] = df_matrice['voies_admin'].apply(classer_injectable)
+
+    # --- B. Préparation des données pour le graphique ---
+    # On regroupe par Pays ET par Type Injection
+    df_pays_total = df_matrice.groupby(['Nom Pays', 'Type Injection'])['nb_sites'].sum().reset_index()
+
+    # Astuce : On calcule le total global par pays pour les trier correctement sur le graphique
+    totaux_par_pays = df_pays_total.groupby('Nom Pays')['nb_sites'].sum().sort_values(ascending=False)
+    ordre_pays = totaux_par_pays.index
+
+    # Calcul du total absolu pour les pourcentages
+    total_sites_global = totaux_par_pays.sum()
 
     if not df_pays_total.empty:
         fig_bar = px.bar(
             df_pays_total, 
             x='Nom Pays', 
             y='nb_sites',
+            color='Type Injection', # <-- C'est ça qui sépare la barre en deux !
             text='nb_sites',
+            category_orders={"Nom Pays": ordre_pays}, # Maintient l'ordre du plus grand au plus petit pays
             labels={'nb_sites': 'Nombre de sites', 'Nom Pays': 'Pays'},
-            template='plotly_white'
+            template='plotly_white',
+            color_discrete_map={
+                "Injectable": "#E74C3C",        # Rouge
+                "Non injectable": "#3498DB",    # Bleu
+                "Inconnu": "#BDC3C7"            # Gris clair
+            }
         )
 
         fig_bar.update_traces(
-            marker_color='#004B87', 
-            hovertemplate="Nombre: %{y}<extra></extra>"
+            hovertemplate="<b>%{x}</b><br>%{data.name}: %{y}<extra></extra>",
+            textposition='inside' # Garde les chiffres à l'intérieur de leur zone de couleur
         )
 
         fig_bar.update_layout(
             xaxis_title=None,
             yaxis_title=None,
-            height=400,
-            margin=dict(l=20, r=20, t=20, b=20)
+            height=450,
+            margin=dict(l=20, r=20, t=40, b=20),
+            barmode='stack', # Empile les couleurs les unes sur les autres
+            legend_title_text=""
         )
+
+        # --- C. Ajout des pourcentages au-dessus des barres ---
+        for pays, total_pays in totaux_par_pays.items():
+            pourcentage = (total_pays / total_sites_global) * 100
+            # On ajoute le texte juste au-dessus (y=total_pays)
+            fig_bar.add_annotation(
+                x=pays,
+                y=total_pays,
+                text=f"{pourcentage:.1f}%", # Format avec 1 chiffre après la virgule
+                showarrow=False,
+                yshift=10, # Décale le texte de 10 pixels vers le haut
+                font=dict(size=11, color="black")
+            )
 
         st.plotly_chart(fig_bar, use_container_width=True)
     else:
@@ -927,6 +1106,75 @@ def stats_section(results):
         else:
             st.info("Aucune donnée ATC disponible pour ces critères.")
 
+    # --- 5. NOUVEAU TABLEAU : DIVERSITÉ PAR PAYS ---
+    st.write("---")
+    st.write("**Classement des Pays par diversité de fabrication (Codes ATC uniques)**")
+
+    with st.spinner("Analyse de la production par pays..."):
+        df_pays_atc = get_stats_pays_atc(cis_tuple)
+
+        if not df_pays_atc.empty:
+            # On applique la traduction des pays pour que l'affichage soit propre
+            df_pays_atc['Pays de fabrication'] = df_pays_atc['Pays de fabrication'].map(TRADUCTION_PAYS).fillna(df_pays_atc['Pays de fabrication'])
+
+            st.dataframe(
+                df_pays_atc, 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "Nombre d'ATC uniques": st.column_config.ProgressColumn(
+                        "Nombre d'ATC uniques",
+                        format="%d",
+                        min_value=0,
+                        max_value=int(df_pays_atc["Nombre d'ATC uniques"].max())
+                    )
+                }
+            )
+        else:
+            st.info("Aucune donnée de pays disponible pour ces critères.")
+
+    # --- 6. NOUVEAU TABLEAU : DÉPENDANCE HORS EUROPE ---
+    st.write("---")
+    st.write("**Classement des Pays hors Europe par exclusivité de fabrication (ATC non produits en Europe)**")
+
+    with st.spinner("Analyse"):
+        df_hors_eu = get_stats_pays_hors_eu_exclusifs(cis_tuple)
+
+        if not df_hors_eu.empty:
+            # --- AJOUT ICI : Calcul du total d'ATC uniques hors Europe ---
+            # Comme un même ATC exclusif peut être fabriqué dans plusieurs pays hors Europe (ex: Chine ET Inde),
+            # on doit recompter les ATC uniques globaux à partir de la liste texte concaténée.
+            tous_les_atc_hors_eu = set()
+            for liste_atc in df_hors_eu["Liste des codes ATC"]:
+                # On sépare la chaîne "A01A | B02C" en une vraie liste Python et on l'ajoute au set
+                atc_individuels = [atc.strip() for atc in str(liste_atc).split('|')]
+                tous_les_atc_hors_eu.update(atc_individuels)
+
+            total_atc_hors_eu = len(tous_les_atc_hors_eu)
+
+            # Affichage de la métrique bien visible
+            st.metric(
+                label="Total des classes thérapeutiques (ATC) produites exclusivement hors Europe", 
+                value=total_atc_hors_eu
+            )
+            # -----------------------------------------------------------
+
+            st.dataframe(
+                df_hors_eu, 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "Nombre d'ATC uniques": st.column_config.ProgressColumn(
+                        "Nombre d'ATC uniques",
+                        format="%d",
+                        min_value=0,
+                        max_value=int(df_hors_eu["Nombre d'ATC uniques"].max())
+                    )
+                }
+            )
+        else:
+            st.success("Tous les codes ATC de cette sélection ont au moins un site de production en Europe.")
+
 def dci_section(cis_list, df_secret):
     st.subheader("Synthèse regroupée par ATC")
 
@@ -937,7 +1185,8 @@ def dci_section(cis_list, df_secret):
             COUNT(DISTINCT m.cis) AS "Nb de déclinaisons (CIS)",
             STRING_AGG(DISTINCT m.nom, ' | ') AS "Spécialités concernées",
             STRING_AGG(DISTINCT m.titulaire, ' | ') AS "Laboratoires fabriquant",
-            STRING_AGG(DISTINCT f.pays_propre, ' | ') AS "Pays de production",
+            -- CHANGEMENT ICI : On utilise la nouvelle table paysfabrication
+            STRING_AGG(DISTINCT f.pays, ' | ') AS "Pays de production", 
             STRING_AGG(DISTINCT d.statut, ' / ') AS "Alertes de disponibilité",
             BOOL_OR(m.est_mitm) AS est_mitm,
             BOOL_OR(m.est_lme) AS est_lme,
@@ -946,7 +1195,8 @@ def dci_section(cis_list, df_secret):
             BOOL_OR(lpa.est_spec_lme) AS est_spec_lme
         FROM medicament m
         LEFT JOIN composition c ON m.cis = c.cis
-        LEFT JOIN fabricant f ON m.cis = f.cis
+        -- CHANGEMENT ICI : Jointure sur la nouvelle table
+        LEFT JOIN paysfabrication f ON m.cis = f.cis 
         LEFT JOIN disponibilite d ON m.cis = d.cis
         LEFT JOIN listes_publiques_add lpa ON m.code_atc = lpa.code_atc
         WHERE m.cis IN :cis_list AND m.code_atc IS NOT NULL
